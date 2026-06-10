@@ -8,7 +8,18 @@ set -euo pipefail
 # ---- Configuration ----
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BACKEND_ROOT="$(cd "$PROJECT_ROOT/../ERP-BACKEND" && pwd)"
+# Resolve backend root: try multiple possible names/locations (case-sensitive filesystems)
+if [ -d "$PROJECT_ROOT/../ERP-BACKEND" ]; then
+    BACKEND_ROOT="$(cd "$PROJECT_ROOT/../ERP-BACKEND" && pwd)"
+elif [ -d "$PROJECT_ROOT/../ERP-Backend" ]; then
+    BACKEND_ROOT="$(cd "$PROJECT_ROOT/../ERP-Backend" && pwd)"
+else
+    log_error "Backend directory not found. Expected a sibling directory of 'ERP' named ERP-BACKEND or ERP-Backend."
+    log_error "Searched in:"
+    log_error "  $PROJECT_ROOT/../ERP-BACKEND"
+    log_error "  $PROJECT_ROOT/../ERP-Backend"
+    exit 1
+fi
 
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 COMPOSE_PROJECT_NAME="erp"
