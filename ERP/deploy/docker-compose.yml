@@ -28,7 +28,7 @@ services:
   # ERP Backend (.NET API)
   erp-backend:
     build:
-      context: ../../ERP-BACKEND
+      context: ../../ERP-Backend
       dockerfile: Dockerfile
     container_name: erp-backend
     restart: unless-stopped
