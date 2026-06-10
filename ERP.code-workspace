@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "ERP",
+			"name": "ERP Client"
+		},
+		{
+			"path": "ERP-BACKEND",
+			"name": "ERP-BACKEND"
+		}
+	],
+	"settings": {}
+}
