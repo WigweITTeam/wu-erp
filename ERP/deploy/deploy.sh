@@ -67,21 +67,33 @@ Examples:
 EOF
 }
 
+# Global: docker command prefix (may be "sudo docker" if user not in docker group)
+DOCKER_CMD="docker"
+
 # ---- Prerequisite Checks ----
 check_prerequisites() {
     local missing=0
 
     if ! command -v docker &>/dev/null; then
-        log_error "docker is not installed. Please install Docker Desktop first."
+        log_error "docker is not installed. Please install Docker first."
         missing=1
     elif ! docker info &>/dev/null; then
-        log_error "Docker is not running. Please start Docker Desktop."
-        missing=1
-    fi
-
-    if ! command -v docker compose &>/dev/null && ! docker-compose &>/dev/null; then
-        log_error "docker compose is not available. Please install Docker Compose."
-        missing=1
+        # docker info may fail if user is not in the docker group;
+        # check if the daemon is actually running as a fallback
+        if systemctl is-active --quiet docker 2>/dev/null || service docker status &>/dev/null; then
+            # Docker daemon is running but user lacks socket access; use sudo
+            if sudo docker info &>/dev/null; then
+                log_warn "User not in 'docker' group. Using 'sudo docker' for this session."
+                DOCKER_CMD="sudo docker"
+            else
+                log_error "Docker daemon is running but 'sudo docker info' also failed."
+                log_error "Ensure user '$(whoami)' has sudo access to docker."
+                exit 1
+            fi
+        else
+            log_error "Docker is not running. Please start Docker."
+            missing=1
+        fi
     fi
 
     if [ $missing -eq 1 ]; then
@@ -89,10 +101,12 @@ check_prerequisites() {
     fi
 }
 
-# Determine compose command
+# Determine compose command (also with sudo if needed)
 compose_cmd() {
-    if docker compose version &>/dev/null 2>&1; then
-        echo "docker compose"
+    if $DOCKER_CMD compose version &>/dev/null 2>&1; then
+        echo "$DOCKER_CMD compose"
+    elif sudo $DOCKER_CMD compose version &>/dev/null 2>&1; then
+        echo "sudo $DOCKER_CMD compose"
     else
         echo "docker-compose"
     fi
@@ -107,35 +121,35 @@ cmd_deploy() {
     mkdir -p "$LOG_DIR"
 
     # Ensure Docker network exists
-    if ! docker network inspect "$DOCKER_NETWORK" &>/dev/null 2>&1; then
+    if ! $DOCKER_CMD network inspect "$DOCKER_NETWORK" &>/dev/null 2>&1; then
         log_info "Creating Docker network: $DOCKER_NETWORK"
-        docker network create "$DOCKER_NETWORK" 2>/dev/null || true
+        $DOCKER_CMD network create "$DOCKER_NETWORK" 2>/dev/null || true
     fi
 
     if [ "$frontend_only" = "true" ]; then
         log_info "Deploying frontend only..."
         log_info "Building frontend image..."
-        docker build \
+        $DOCKER_CMD build \
             -f "$SCRIPT_DIR/Dockerfile.nginx" \
             -t erp-frontend:latest \
             "$PROJECT_ROOT" 2>&1 | tail -5
         log_ok "Frontend image built"
 
         # Stop existing frontend container if running
-        if docker ps -q -f name=erp-frontend | grep -q .; then
+        if $DOCKER_CMD ps -q -f name=erp-frontend | grep -q .; then
             log_info "Stopping existing frontend container..."
-            docker stop erp-frontend 2>/dev/null || true
-            docker rm erp-frontend 2>/dev/null || true
+            $DOCKER_CMD stop erp-frontend 2>/dev/null || true
+            $DOCKER_CMD rm erp-frontend 2>/dev/null || true
         fi
 
         # Check if backend is available
-        if docker ps -q -f name=erp-backend | grep -q .; then
+        if $DOCKER_CMD ps -q -f name=erp-backend | grep -q .; then
             log_info "Backend container detected, connecting frontend..."
-            docker network connect "$DOCKER_NETWORK" erp-backend 2>/dev/null || true
+            $DOCKER_CMD network connect "$DOCKER_NETWORK" erp-backend 2>/dev/null || true
         fi
 
         log_info "Starting frontend container..."
-        docker run -d \
+        $DOCKER_CMD run -d \
             --name erp-frontend \
             --network "$DOCKER_NETWORK" \
             -p 80:80 \
@@ -144,14 +158,14 @@ cmd_deploy() {
         log_ok "Frontend deployed at http://localhost"
     else
         log_info "Building backend image..."
-        docker build \
+        $DOCKER_CMD build \
             -f "$BACKEND_ROOT/Dockerfile" \
             -t erp-backend:latest \
             "$BACKEND_ROOT" 2>&1 | tail -5
         log_ok "Backend image built"
 
         log_info "Building frontend image..."
-        docker build \
+        $DOCKER_CMD build \
             -f "$SCRIPT_DIR/Dockerfile.nginx" \
             -t erp-frontend:latest \
             "$PROJECT_ROOT" 2>&1 | tail -5
@@ -173,15 +187,15 @@ cmd_deploy_backend() {
     log_info "=== Deploying Backend Only ==="
 
     log_info "Building backend image..."
-    docker build \
+    $DOCKER_CMD build \
         -f "$BACKEND_ROOT/Dockerfile" \
         -t erp-backend:latest \
         "$BACKEND_ROOT" 2>&1 | tail -5
 
     # Start backend if not running
-    if ! docker ps -q -f name=erp-backend | grep -q .; then
+    if ! $DOCKER_CMD ps -q -f name=erp-backend | grep -q .; then
         log_info "Starting backend container..."
-        docker run -d \
+        $DOCKER_CMD run -d \
             --name erp-backend \
             --network "$DOCKER_NETWORK" \
             -p 8080:8080 \
@@ -197,8 +211,8 @@ cmd_deploy_backend() {
 cmd_stop() {
     log_info "Stopping all services..."
     $(compose_cmd) -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" down 2>/dev/null || true
-    docker stop erp-frontend 2>/dev/null || true
-    docker stop erp-backend 2>/dev/null || true
+    $DOCKER_CMD stop erp-frontend 2>/dev/null || true
+    $DOCKER_CMD stop erp-backend 2>/dev/null || true
     log_ok "All services stopped"
 }
 
@@ -215,9 +229,9 @@ cmd_clean() {
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         log_info "Cleaning up..."
         $(compose_cmd) -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" down -v 2>/dev/null || true
-        docker rm -f erp-frontend 2>/dev/null || true
-        docker rm -f erp-backend 2>/dev/null || true
-        docker network rm "$DOCKER_NETWORK" 2>/dev/null || true
+        $DOCKER_CMD rm -f erp-frontend 2>/dev/null || true
+        $DOCKER_CMD rm -f erp-backend 2>/dev/null || true
+        $DOCKER_CMD network rm "$DOCKER_NETWORK" 2>/dev/null || true
         log_ok "Cleanup complete"
     else
         log_info "Cancelled"
@@ -229,24 +243,24 @@ cmd_logs() {
 }
 
 cmd_logs_frontend() {
-    docker logs -f erp-frontend 2>&1
+    $DOCKER_CMD logs -f erp-frontend 2>&1
 }
 
 cmd_logs_backend() {
-    docker logs -f erp-backend 2>&1
+    $DOCKER_CMD logs -f erp-backend 2>&1
 }
 
 cmd_status() {
     log_info "=== Container Status ==="
-    docker ps --filter "name=erp-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
+    $DOCKER_CMD ps --filter "name=erp-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true
 
     log_info "=== Docker Network ==="
-    docker network inspect "$DOCKER_NETWORK" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || log_warn "Network not found"
+    $DOCKER_CMD network inspect "$DOCKER_NETWORK" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || log_warn "Network not found"
 }
 
 cmd_rebuild() {
     log_info "=== Full Rebuild & Deploy ==="
-    docker rmi erp-frontend:latest erp-backend:latest 2>/dev/null || true
+    $DOCKER_CMD rmi erp-frontend:latest erp-backend:latest 2>/dev/null || true
     cmd_deploy
 }
 
@@ -254,18 +268,18 @@ cmd_health() {
     log_info "=== Health Checks ==="
 
     # Frontend health
-    if docker ps -q -f name=erp-frontend | grep -q .; then
+    if $DOCKER_CMD ps -q -f name=erp-frontend | grep -q .; then
         local frontend_status
-        frontend_status=$(docker inspect --format='{{.State.Health.Status}}' erp-frontend 2>/dev/null || echo "unknown")
+        frontend_status=$($DOCKER_CMD inspect --format='{{.State.Health.Status}}' erp-frontend 2>/dev/null || echo "unknown")
         echo -e "  Frontend:  ${GREEN}${frontend_status}${NC}"
     else
         echo -e "  Frontend:  ${RED}not running${NC}"
     fi
 
     # Backend health
-    if docker ps -q -f name=erp-backend | grep -q .; then
+    if $DOCKER_CMD ps -q -f name=erp-backend | grep -q .; then
         local backend_status
-        backend_status=$(docker inspect --format='{{.State.Health.Status}}' erp-backend 2>/dev/null || true)
+        backend_status=$($DOCKER_CMD inspect --format='{{.State.Health.Status}}' erp-backend 2>/dev/null || true)
         if [ -z "$backend_status" ]; then
             backend_status="no health check configured"
         fi
@@ -273,7 +287,7 @@ cmd_health() {
 
         # Backend reachable from frontend container (direct port, not through Nginx)
         local api_response
-        api_response=$(docker exec erp-frontend wget -qO- --tries=1 --timeout=5 http://erp-backend:8080/health 2>&1 || true)
+        api_response=$($DOCKER_CMD exec erp-frontend wget -qO- --tries=1 --timeout=5 http://erp-backend:8080/health 2>&1 || true)
         if [[ "$api_response" == *"401"* ]] || [[ "$api_response" == *"healthy"* ]] || [[ "$api_response" == *"unauthorized"* ]]; then
             echo -e "  API:       ${GREEN}reachable (auth required)${NC}"
         elif echo "$api_response" | grep -qi "unreachable\|cannot\|error"; then
